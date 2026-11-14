@@ -45,6 +45,13 @@ That writes `dist/dmarc-viewer` and, on the first build only, copies `config/ana
 
 Or run the window and use **Open**. **Config** opens `dist/analyzer.env` in your default editor.
 
+CI builds the same Linux binary on every push and pull request (Actions → the run → Artifacts). Pushing a tag named `v*` (for example `v0.1.0`) also attaches `dmarc-viewer-linux-x86_64` to a GitHub Release, so you can download it without building:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 To register an “Open With” handler for XML / gzip / zip / `.eml`:
 
 ```bash
@@ -170,7 +177,7 @@ The header identifies the reporter, policy domain, config file, and selected pro
 └── Makefile
 ```
 
-`make check` byte-compiles both modules. GitHub Actions runs that compile step and builds the pipe image.
+`make check` byte-compiles both modules. GitHub Actions compiles the sources, builds the pipe image, and runs `make viewer`. The viewer binary is uploaded as a workflow artifact. Version tags (`v*`) publish it on the matching GitHub Release.
 
 Keep live configuration out of git. `dist/`, `analyzer.env`, and `*.env` are gitignored on purpose.
 
