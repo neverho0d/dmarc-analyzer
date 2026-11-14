@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmarc-analyzer"
+version = "0.1.0"
+description = "Analyze DMARC aggregate reports and recommend SPF, DKIM, and DMARC DNS changes."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Sergei Podushkin" }]
+keywords = ["dmarc", "spf", "dkim", "email", "dns", "postfix"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Email",
+    "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = [
+    "dnspython>=2.6,<3",
+]
+
+[project.scripts]
+dmarc-analyzer = "dmarc_analyzer:main"
+dmarc-viewer = "dmarc_viewer:main"
+
+[tool.setuptools]
+py-modules = ["dmarc_analyzer", "dmarc_viewer"]
+
+[tool.setuptools.package-dir]
+"" = "src"

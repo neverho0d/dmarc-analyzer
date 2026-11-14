@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m py_compile src/dmarc_analyzer.py src/dmarc_viewer.py
+      - name: Import analyzer
+        run: PYTHONPATH=src python -c "from dmarc_analyzer import analyze_viewer_path, format_viewer_report, main"
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pipe image
+        run: docker build -t dmarc-analyzer .

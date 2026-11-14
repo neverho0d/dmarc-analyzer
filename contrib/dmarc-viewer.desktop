@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DMARC Analyzer
+Comment=Open a DMARC report attachment and show analysis
+Exec=dmarc-viewer %f
+TryExec=dmarc-viewer
+Terminal=false
+Categories=Utility;
+MimeType=application/xml;text/xml;application/gzip;application/zip;message/rfc822;
+StartupNotify=true

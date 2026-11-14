@@ -1,0 +1,27 @@
+# cat report.xml.gz | docker compose run --rm -T analyzer --dry-run
+# Add `--env-file dist/analyzer.env` (or /etc/dmarc/analyzer.env) for a real site.
+services:
+  analyzer:
+    build: .
+    image: dmarc-analyzer
+    network_mode: host
+    stdin_open: true
+    tty: false
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    environment:
+      TARGET_DOMAINS: ${TARGET_DOMAINS:-example.com}
+      AUTHORIZED_SERVER_NETS: ${AUTHORIZED_SERVER_NETS:-127.0.0.1/32}
+      REPORT_AUTHORIZED_ONLY: ${REPORT_AUTHORIZED_ONLY:-true}
+      FALLBACK_DKIM_SELECTORS: ${FALLBACK_DKIM_SELECTORS:-default,s1,srs,mail}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-postmaster@example.com}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-dmarc-analyzer@example.com}
+      DISPATCH_METHOD: ${DISPATCH_METHOD:-smtp}
+      SMTP_HOST: ${SMTP_HOST:-127.0.0.1}
+      SMTP_PORT: ${SMTP_PORT:-25}

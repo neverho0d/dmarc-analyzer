@@ -1,0 +1,38 @@
+FROM fedora:44 AS build
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3 \
+        python3-pip \
+        python3-devel \
+        python3-tkinter \
+        binutils \
+        tcl \
+        tk \
+    && dnf clean all
+
+WORKDIR /src
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir --root-user-action=ignore -r requirements.txt pyinstaller
+
+COPY src/dmarc_analyzer.py src/dmarc_viewer.py config/analyzer.env.example ./
+
+RUN python3 -c "from dmarc_analyzer import analyze_viewer_path, format_viewer_report; assert callable(analyze_viewer_path) and callable(format_viewer_report)"
+
+RUN pyinstaller \
+        --noconfirm \
+        --clean \
+        --onefile \
+        --windowed \
+        --name dmarc-viewer \
+        --hidden-import dns \
+        --hidden-import dns.resolver \
+        --hidden-import tkinter \
+        --hidden-import tkinter.filedialog \
+        --hidden-import tkinter.scrolledtext \
+        --collect-submodules dns \
+        --add-data analyzer.env.example:. \
+        dmarc_viewer.py
+
+FROM scratch AS export
+COPY --from=build /src/dist/dmarc-viewer /dmarc-viewer
