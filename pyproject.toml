@@ -26,6 +26,11 @@ dependencies = [
     "dnspython>=2.6,<3",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
 [project.scripts]
 dmarc-analyzer = "dmarc_analyzer:main"
 dmarc-viewer = "dmarc_viewer:main"
@@ -35,3 +40,8 @@ py-modules = ["dmarc_analyzer", "dmarc_viewer"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

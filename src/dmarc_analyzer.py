@@ -26,6 +26,7 @@ from typing import List, Dict, Tuple, Set, Optional
 import xml.etree.ElementTree as ET
 
 try:
+    import dns.exception
     import dns.resolver
 except ImportError:
     sys.exit("Error: 'dnspython' package is required. Install via: pip install dnspython")
@@ -65,7 +66,16 @@ DEFAULT_CONFIG = {
 
 # In-memory DNS cache: (qtype, query_name) -> List[str]
 DNS_CACHE: Dict[Tuple[str, str], List[str]] = {}
+# Transient lookup failures are not stored as empty answers.
+DNS_LOOKUP_ERRORS: Dict[Tuple[str, str], str] = {}
 SPF_DNS_LOOKUP_LIMIT = 10
+_DNS_TRANSIENT = (dns.resolver.NoNameservers, dns.exception.Timeout)
+
+
+def clear_dns_cache() -> None:
+    """Drop cached DNS answers and lookup errors (used by tests)."""
+    DNS_CACHE.clear()
+    DNS_LOOKUP_ERRORS.clear()
 
 _LIST_KEYS = ("TARGET_DOMAINS", "AUTHORIZED_SERVER_NETS", "FALLBACK_DKIM_SELECTORS")
 _STR_KEYS = ("ALERT_EMAIL_TO", "ALERT_EMAIL_FROM", "DISPATCH_METHOD", "SMTP_HOST")
@@ -396,30 +406,75 @@ def is_ip_in_networks(ip_str: str, networks: List[ipaddress.IPv4Network | ipaddr
 # ==============================================================================
 # LIVE DNS DIAGNOSTICS & RECORD RECOMMENDATIONS
 # ==============================================================================
+def _absolute_dns_name(name: str) -> str:
+    """FQDN with a trailing dot so resolv.conf search suffixes are not applied."""
+    cleaned = (name or "").strip().rstrip(".")
+    return f"{cleaned}." if cleaned else cleaned
+
+
+def _rdata_txt(rdata) -> str:
+    parts = []
+    for part in rdata.strings:
+        if isinstance(part, (bytes, bytearray)):
+            parts.append(part.decode("utf-8", errors="replace"))
+        else:
+            parts.append(str(part))
+    return "".join(parts)
+
+
+def _spf_txt_candidate(txt: str) -> Optional[str]:
+    cleaned = (txt or "").strip().strip('"').lstrip("\ufeff")
+    if cleaned.lower().startswith("v=spf1"):
+        return cleaned
+    return None
+
+
+def dns_lookup_error(name: str, rdtype: str) -> Optional[str]:
+    """Return a cached transient DNS error, if the last lookup did not complete."""
+    return DNS_LOOKUP_ERRORS.get((rdtype.upper(), (name or "").lower().rstrip(".")))
+
+
 def query_dns(name: str, rdtype: str) -> List[str]:
-    """Cached DNS lookup returning string values for TXT, A, AAAA, or MX."""
+    """Cached DNS lookup returning string values for TXT, A, AAAA, or MX.
+
+    Names are queried as absolute FQDNs (search=False) so a resolv.conf
+    ``search`` suffix such as ``lan`` cannot turn example.com into
+    example.com.lan. Timeouts and SERVFAIL are not cached as empty answers.
+    """
     qtype = rdtype.upper()
-    cache_key = (qtype, name.lower().rstrip("."))
+    qname = (name or "").lower().rstrip(".")
+    cache_key = (qtype, qname)
     if cache_key in DNS_CACHE:
         return DNS_CACHE[cache_key]
+    if cache_key in DNS_LOOKUP_ERRORS:
+        return []
 
-    results: List[str] = []
-    try:
-        answers = dns.resolver.resolve(name, qtype)
-        for rdata in answers:
-            if qtype == "TXT":
-                results.append(
-                    "".join(part.decode("utf-8", errors="replace") for part in rdata.strings)
-                )
-            elif qtype == "MX":
-                results.append(str(rdata.exchange).rstrip("."))
-            else:
-                results.append(getattr(rdata, "address", str(rdata)))
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.Timeout):
-        pass
+    last_error: Optional[BaseException] = None
+    for _attempt in range(2):
+        try:
+            answers = dns.resolver.resolve(_absolute_dns_name(qname), qtype, search=False)
+            results: List[str] = []
+            for rdata in answers:
+                if qtype == "TXT":
+                    results.append(_rdata_txt(rdata))
+                elif qtype == "MX":
+                    results.append(str(rdata.exchange).rstrip("."))
+                else:
+                    results.append(getattr(rdata, "address", str(rdata)))
+            DNS_CACHE[cache_key] = results
+            return results
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            DNS_CACHE[cache_key] = []
+            return []
+        except _DNS_TRANSIENT as exc:
+            last_error = exc
+            continue
+        except dns.exception.DNSException as exc:
+            last_error = exc
+            break
 
-    DNS_CACHE[cache_key] = results
-    return results
+    DNS_LOOKUP_ERRORS[cache_key] = type(last_error).__name__ if last_error else "DNSException"
+    return []
 
 
 def query_txt_records(target_domain: str) -> List[str]:
@@ -429,8 +484,9 @@ def query_txt_records(target_domain: str) -> List[str]:
 
 def _spf_record_for(domain: str) -> Optional[str]:
     for txt in query_txt_records(domain):
-        if txt.lower().startswith("v=spf1"):
-            return txt
+        candidate = _spf_txt_candidate(txt)
+        if candidate:
+            return candidate
     return None
 
 
@@ -513,6 +569,8 @@ def _spf_check(
         return "permerror"
     record = _spf_record_for(domain)
     if not record:
+        if dns_lookup_error(domain, "TXT"):
+            return "temperror"
         return "none"
 
     state["stack"].append(domain)
@@ -644,18 +702,27 @@ def diagnose_domain_dns(
 
     # 1. SPF Inspection (follow include/a/mx down to IP networks)
     domain_txts = query_txt_records(domain)
+    spf_lookup_error = dns_lookup_error(domain, "TXT")
     for txt in domain_txts:
-        if txt.lower().startswith("v=spf1"):
+        candidate = _spf_txt_candidate(txt)
+        if candidate:
             diag["spf"]["present"] = True
-            diag["spf"]["raw"] = txt
+            diag["spf"]["raw"] = candidate
             spf_eval = evaluate_spf_authorization(domain, source_ip)
             diag["spf"]["ip_authorized"] = spf_eval["authorized"]
             diag["spf"]["authorized_via"] = spf_eval["via"]
             diag["spf"]["lookup_count"] = spf_eval["lookups"]
             diag["spf"]["lookup_limit_exceeded"] = spf_eval["limit_exceeded"]
+            diag["spf"]["spf_result"] = spf_eval["result"]
             break
 
-    if not diag["spf"]["present"]:
+    if spf_lookup_error and not diag["spf"]["present"]:
+        diag["spf"]["error"] = spf_lookup_error
+        diag["spf"]["recommendation"] = (
+            f"Could not read TXT records for {domain} ({spf_lookup_error}). "
+            "Not recommending SPF changes until DNS succeeds."
+        )
+    elif not diag["spf"]["present"]:
         if authorize_source_ip:
             diag["spf"]["recommendation"] = (
                 f"Add TXT record for {domain}:\n"
@@ -667,18 +734,30 @@ def diagnose_domain_dns(
                 f'  Value: "v=spf1 ~all"'
             )
     elif authorize_source_ip and not diag["spf"]["ip_authorized"]:
-        suggested = _spf_value_with_ip(diag["spf"]["raw"], source_ip)
-        diag["spf"]["recommendation"] = (
-            f"Authorize sender IP in existing SPF record for {domain}:\n"
-            f"  Current: \"{diag['spf']['raw']}\"\n"
-            f"  Suggested: \"{suggested}\""
-        )
+        spf_result = diag["spf"].get("spf_result")
+        if spf_result in ("temperror", "permerror"):
+            diag["spf"]["error"] = spf_result
+            diag["spf"]["recommendation"] = (
+                f"Could not fully resolve SPF for {domain} ({spf_result}). "
+                "Not recommending SPF changes until DNS succeeds."
+            )
+        else:
+            suggested = _spf_value_with_ip(diag["spf"]["raw"], source_ip)
+            diag["spf"]["recommendation"] = (
+                f"Authorize sender IP in existing SPF record for {domain}:\n"
+                f"  Current: \"{diag['spf']['raw']}\"\n"
+                f"  Suggested: \"{suggested}\""
+            )
 
     # 2. DKIM Inspection
     valid_dkim_found = False
+    dkim_lookup_errors: List[str] = []
     for selector in selectors:
         dkim_subdomain = f"{selector}._domainkey.{domain}"
         dkim_records = query_txt_records(dkim_subdomain)
+        dkim_error = dns_lookup_error(dkim_subdomain, "TXT")
+        if dkim_error:
+            dkim_lookup_errors.append(f"{selector}: {dkim_error}")
         found = False
         for rec in dkim_records:
             if "v=DKIM1" in rec or "p=" in rec:
@@ -690,24 +769,38 @@ def diagnose_domain_dns(
             diag["dkim"]["checked_selectors"][selector] = {"present": False, "raw": None}
 
     if not valid_dkim_found:
-        primary_sel = selectors[0] if selectors else "default"
-        diag["dkim"]["recommendations"].append(
-            f"No active DKIM key found under probed selector(s): {', '.join(selectors)}.\n"
-            f"  1. Generate a 2048-bit key on your mail server: opendkim-genkey -b 2048 -s {primary_sel} -d {domain}\n"
-            f"  2. Publish the public key TXT record at {primary_sel}._domainkey.{domain}:\n"
-            f'     Value: "v=DKIM1; k=rsa; p=<PUBLIC_KEY>"'
-        )
+        if dkim_lookup_errors:
+            diag["dkim"]["error"] = "; ".join(dkim_lookup_errors)
+            diag["dkim"]["recommendations"].append(
+                f"Could not read DKIM TXT for {domain} ({diag['dkim']['error']}). "
+                "Not recommending a new DKIM key until DNS succeeds."
+            )
+        else:
+            primary_sel = selectors[0] if selectors else "default"
+            diag["dkim"]["recommendations"].append(
+                f"No active DKIM key found under probed selector(s): {', '.join(selectors)}.\n"
+                f"  1. Generate a 2048-bit key on your mail server: opendkim-genkey -b 2048 -s {primary_sel} -d {domain}\n"
+                f"  2. Publish the public key TXT record at {primary_sel}._domainkey.{domain}:\n"
+                f'     Value: "v=DKIM1; k=rsa; p=<PUBLIC_KEY>"'
+            )
 
     # 3. DMARC Inspection
     dmarc_subdomain = f"_dmarc.{domain}"
     dmarc_records = query_txt_records(dmarc_subdomain)
+    dmarc_lookup_error = dns_lookup_error(dmarc_subdomain, "TXT")
     for txt in dmarc_records:
         if txt.startswith("v=DMARC1"):
             diag["dmarc"]["present"] = True
             diag["dmarc"]["raw"] = txt
             break
 
-    if not diag["dmarc"]["present"]:
+    if dmarc_lookup_error and not diag["dmarc"]["present"]:
+        diag["dmarc"]["error"] = dmarc_lookup_error
+        diag["dmarc"]["recommendation"] = (
+            f"Could not read TXT records for _dmarc.{domain} ({dmarc_lookup_error}). "
+            "Not recommending DMARC changes until DNS succeeds."
+        )
+    elif not diag["dmarc"]["present"]:
         diag["dmarc"]["recommendation"] = (
             f"Add TXT record for _dmarc.{domain}:\n"
             f'  Value: "v=DMARC1; p=none; rua=mailto:{rua}; sp=none;"'
@@ -853,7 +946,12 @@ def _recommendation_items(
     rua = config.get("ALERT_EMAIL_TO") or f"dmarc-reports@{domain}"
     items: List[Dict] = []
 
-    if not diag["spf"]["present"]:
+    if diag["spf"].get("error") and (
+        not diag["spf"]["present"] or diag["spf"].get("spf_result") in ("temperror", "permerror")
+    ):
+        spf_value = diag["spf"].get("raw") or "(unavailable)"
+        spf_action = f"check (DNS lookup failed: {diag['spf']['error']})"
+    elif not diag["spf"]["present"]:
         spf_value = f"v=spf1 {_spf_ip_mechanism(source_ip)} ~all" if authorized else "v=spf1 ~all"
         spf_action = "add" if authorized else "add (do not include this external source IP)"
     elif authorized and not diag["spf"]["ip_authorized"]:
@@ -883,8 +981,12 @@ def _recommendation_items(
         dkim_selector = next(iter(diag["dkim"]["checked_selectors"]), None) or (
             config.get("FALLBACK_DKIM_SELECTORS") or ["default"]
         )[0]
-        dkim_value = "v=DKIM1; k=rsa; p=<PUBLIC_KEY>"
-        dkim_action = f"add (publish key for selector {dkim_selector})"
+        if diag["dkim"].get("error"):
+            dkim_value = "(unavailable)"
+            dkim_action = f"check (DNS lookup failed: {diag['dkim']['error']})"
+        else:
+            dkim_value = "v=DKIM1; k=rsa; p=<PUBLIC_KEY>"
+            dkim_action = f"add (publish key for selector {dkim_selector})"
     else:
         dkim_action = "keep"
     items.append({
@@ -902,6 +1004,9 @@ def _recommendation_items(
         else:
             dmarc_value = diag["dmarc"]["raw"]
             dmarc_action = "keep"
+    elif diag["dmarc"].get("error"):
+        dmarc_value = "(unavailable)"
+        dmarc_action = f"check (DNS lookup failed: {diag['dmarc']['error']})"
     else:
         dmarc_value = f"v=DMARC1; p=none; rua=mailto:{rua}; sp=none;"
         dmarc_action = "add"

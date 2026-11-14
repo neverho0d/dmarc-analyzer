@@ -19,11 +19,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Compile
-        run: python -m py_compile src/dmarc_analyzer.py src/dmarc_viewer.py
-      - name: Import analyzer
-        run: PYTHONPATH=src python -c "from dmarc_analyzer import analyze_viewer_path, format_viewer_report, main"
+        run: pip install -r requirements.txt pytest
+      - name: Test
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest
 
   image:
     runs-on: ubuntu-latest

@@ -169,6 +169,7 @@ The header identifies the reporter, policy domain, config file, and selected pro
 ```text
 .
 ├── src/                  Analyzer and Tkinter viewer
+├── tests/                pytest suite (no live DNS)
 ├── config/               analyzer.env.example
 ├── contrib/              Postfix pipe wrapper and .desktop file
 ├── docs/                 Architecture notes
@@ -177,7 +178,14 @@ The header identifies the reporter, policy domain, config file, and selected pro
 └── Makefile
 ```
 
-`make check` byte-compiles both modules. GitHub Actions compiles the sources, builds the pipe image, and runs `make viewer`. The viewer binary is uploaded as a workflow artifact. Version tags (`v*`) publish it on the matching GitHub Release.
+```bash
+pip install -r requirements.txt pytest
+make test
+```
+
+`make test` sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` so plugins from another project’s virtualenv (for example `pytest-postgresql`) are not loaded. This suite does not use PostgreSQL.
+
+Add or change a test first, run `make test` (red), then change `src/` until it is green. Tests patch DNS; they do not query the network. GitHub Actions runs the suite, builds the pipe image, and runs `make viewer`. The viewer binary is uploaded as a workflow artifact. Version tags (`v*`) publish it on the matching GitHub Release.
 
 Keep live configuration out of git. `dist/`, `analyzer.env`, and `*.env` are gitignored on purpose.
 

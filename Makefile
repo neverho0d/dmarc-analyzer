@@ -8,15 +8,18 @@ DESKTOP_DST := $(DESKTOP_DIR)/dmarc-viewer.desktop
 PIPE_SRC := contrib/dmarc-analyzer-pipe
 PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc
+# Ignore pytest plugins from the ambient virtualenv (e.g. pytest-postgresql).
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD := 1
 
-.PHONY: all image viewer desktop uninstall-desktop install-pipe check clean distclean help
+.PHONY: all image viewer desktop uninstall-desktop install-pipe test check clean distclean help
 
 all: image viewer
 
 help:
 	@echo "Targets:"
 	@echo "  all               Build the pipe image and the desktop viewer (default)"
-	@echo "  check             Byte-compile the Python sources"
+	@echo "  test              Run the pytest suite (no live DNS)"
+	@echo "  check             Run tests"
 	@echo "  image             Build Docker image $(IMAGE)"
 	@echo "  viewer            Build standalone executable $(VIEWER)"
 	@echo "  desktop           Register the viewer as an Open With handler (optional)"
@@ -25,8 +28,10 @@ help:
 	@echo "  clean             Remove build stamps and the viewer binary (keeps dist/analyzer.env)"
 	@echo "  distclean         Also remove the $(IMAGE) image"
 
-check:
-	python3 -m py_compile src/dmarc_analyzer.py src/dmarc_viewer.py
+test:
+	PYTHONPATH=src python3 -m pytest
+
+check: test
 
 image: $(IMAGE_STAMP)
 
