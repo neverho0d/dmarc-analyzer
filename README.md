@@ -32,7 +32,7 @@ Design notes for the ingestion stages live in [docs/architecture.md](docs/archit
 ## Quick start (desktop viewer)
 
 ```bash
-git clone https://github.com/<you>/dmarc-analyzer.git
+git clone https://github.com/neverho0d/dmarc-analyzer.git
 cd dmarc-analyzer
 make viewer
 ```
